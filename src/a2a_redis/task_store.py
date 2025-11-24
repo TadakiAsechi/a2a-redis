@@ -4,6 +4,7 @@ import json
 from typing import Any, Dict, List, Optional, Union
 
 import redis.asyncio as redis
+from a2a.server.context import ServerCallContext
 from a2a.server.tasks.task_store import TaskStore
 from a2a.types import Task
 
@@ -101,24 +102,36 @@ class RedisTaskStore(TaskStore):
 
         return result
 
-    async def save(self, task: Task) -> None:
+    async def save(
+        self,
+        task: Task,
+        context: ServerCallContext | None = None,
+    ) -> None:
         """Save a task to Redis.
 
         Args:
             task: Task instance to save
+            context: Optional request context (currently unused)
         """
+        # TODO: Integrate `context` into storage logic (e.g., multi-tenant or contextual task isolation).
         serialized_data = self._serialize_data(task)
         await self.redis.hset(self._task_key(task.id), mapping=serialized_data)  # type: ignore[misc]
 
-    async def get(self, task_id: str) -> Optional[Task]:
+    async def get(
+        self,
+        task_id: str,
+        context: ServerCallContext | None = None,
+    ) -> Optional[Task]:
         """Retrieve a task from Redis.
 
         Args:
             task_id: Task identifier
+            context: Optional request context (currently unused)
 
         Returns:
             Task instance or None if not found
         """
+        # TODO: Integrate `context` into storage logic (e.g., multi-tenant or contextual task isolation).
         data = await self.redis.hgetall(self._task_key(task_id))  # type: ignore[misc]
         if not data:
             return None
@@ -126,12 +139,18 @@ class RedisTaskStore(TaskStore):
         task_data = self._deserialize_data(data)  # type: ignore[arg-type]
         return Task(**task_data)
 
-    async def delete(self, task_id: str) -> None:
+    async def delete(
+        self,
+        task_id: str,
+        context: ServerCallContext | None = None,
+    ) -> None:
         """Delete a task from Redis.
 
         Args:
             task_id: Task identifier
+            context: Optional request context (currently unused)
         """
+        # TODO: Integrate `context` into storage logic (e.g., multi-tenant or contextual task isolation).
         await self.redis.delete(self._task_key(task_id))  # type: ignore[misc]
 
     async def update_task(self, task_id: str, updates: Dict[str, Any]) -> bool:
@@ -196,24 +215,36 @@ class RedisJSONTaskStore(TaskStore):
         """Generate the Redis key for a task."""
         return f"{self.prefix}{task_id}"
 
-    async def save(self, task: Task) -> None:
+    async def save(
+        self,
+        task: Task,
+        context: ServerCallContext | None = None,
+    ) -> None:
         """Save a task to Redis using JSON.
 
         Args:
             task: Task instance to save
+            context: Optional request context (currently unused)
         """
+        # TODO: Integrate `context` into storage logic (e.g., multi-tenant or contextual task isolation).
         task_data = task.model_dump() if hasattr(task, "model_dump") else task
         await self.redis.json().set(self._task_key(task.id), "$", task_data)  # type: ignore[misc]
 
-    async def get(self, task_id: str) -> Optional[Task]:
+    async def get(
+        self,
+        task_id: str,
+        context: ServerCallContext | None = None,
+    ) -> Optional[Task]:
         """Retrieve a task from Redis using JSON.
 
         Args:
             task_id: Task identifier
+            context: Optional request context (currently unused)
 
         Returns:
             Task instance or None if not found
         """
+        # TODO: Integrate `context` into storage logic (e.g., multi-tenant or contextual task isolation).
         try:
             result = await self.redis.json().get(self._task_key(task_id))  # type: ignore[misc]
             if result:
@@ -229,12 +260,18 @@ class RedisJSONTaskStore(TaskStore):
         except (Exception,):  # type: ignore[misc]
             return None
 
-    async def delete(self, task_id: str) -> None:
+    async def delete(
+        self,
+        task_id: str,
+        context: ServerCallContext | None = None,
+    ) -> None:
         """Delete a task from Redis.
 
         Args:
             task_id: Task identifier
+            context: Optional request context (currently unused)
         """
+        # TODO: Integrate `context` into storage logic (e.g., multi-tenant or contextual task isolation).
         await self.redis.delete(self._task_key(task_id))  # type: ignore[misc]
 
     async def update_task(self, task_id: str, updates: Dict[str, Any]) -> bool:
