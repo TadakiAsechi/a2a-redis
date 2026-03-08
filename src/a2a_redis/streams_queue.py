@@ -151,7 +151,7 @@ class RedisStreamsEventQueue:
             self._consumer_group_ensured = True
 
         # Read from consumer group
-        timeout = 0 if no_wait else 1000  # 0 = non-blocking, 1000ms block
+        timeout = 0 if no_wait else 1000  # 0 = non-blocking, 1000ms = 1 second timeout
 
         try:
             # XREADGROUP GROUP group_name consumer_id COUNT 1 BLOCK timeout STREAMS stream_key >
