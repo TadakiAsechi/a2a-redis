@@ -67,6 +67,10 @@ class RedisStreamsEventQueue:
         self.redis = redis_client
         self.task_id = task_id
         self.prefix = prefix
+        # close() semantics:
+        # - close(immediate=False): producer shutdown (stop enqueue; consumers may drain)
+        # - close(immediate=True): consumer shutdown (stop dequeue; used by EventConsumer on final event)
+        self._closing = False
         self._closed = False
         self._stream_key = f"{prefix}{task_id}"
 
@@ -101,8 +105,10 @@ class RedisStreamsEventQueue:
         Raises:
             RuntimeError: If queue is closed
         """
-        if self._closed:
-            raise RuntimeError("Cannot enqueue to closed queue")
+        if self._closing or self._closed:
+            # a2a-sdk closes the queue after agent run; reject new enqueues
+            # while allowing consumers to drain already-enqueued events.
+            raise RuntimeError("Cannot enqueue to closing/closed queue")
 
         # Ensure consumer group exists on first use
         if not self._consumer_group_ensured:
@@ -132,8 +138,9 @@ class RedisStreamsEventQueue:
             Reconstructed Pydantic model (Message, Task, TaskStatusUpdateEvent, or TaskArtifactUpdateEvent)
 
         Raises:
-            asyncio.QueueEmpty: If queue is closed (for compatibility with a2a-sdk EventConsumer)
-            RuntimeError: If no events available or other errors occur
+            asyncio.QueueEmpty: If no events are available or queue is closed.
+            asyncio.TimeoutError: If no events within block timeout (no_wait=False).
+              Matches a2a-sdk EventConsumer expectations.
         """
         if self._closed:
             raise asyncio.QueueEmpty("Queue is closed")
@@ -144,7 +151,7 @@ class RedisStreamsEventQueue:
             self._consumer_group_ensured = True
 
         # Read from consumer group
-        timeout = 0 if no_wait else 1000  # 0 = non-blocking, 1000ms = 1 second timeout
+        timeout = 0 if no_wait else 1000  # 0 = non-blocking, 1000ms block
 
         try:
             # XREADGROUP GROUP group_name consumer_id COUNT 1 BLOCK timeout STREAMS stream_key >
@@ -157,7 +164,15 @@ class RedisStreamsEventQueue:
             )  # type: ignore[misc]
 
             if not result or not result[0][1]:  # No messages available
-                raise RuntimeError("No events available")
+                # If producer has signaled close and there are no messages, mark closed and stop consumer.
+                if self._closing:
+                    self._closed = True
+                    raise asyncio.QueueEmpty("Queue is closed")
+                # No events: raise so EventConsumer can continue polling or exit by contract.
+                if no_wait:
+                    # EventConsumer.consume_one() expects QueueEmpty when no_wait and no events.
+                    raise asyncio.QueueEmpty("No events available")
+                raise asyncio.TimeoutError("No events available")
 
             # Extract message data
             _, messages = result[0]
@@ -177,37 +192,54 @@ class RedisStreamsEventQueue:
             # Reconstruct the actual Pydantic model using shared utility
             return deserialize_event(event_structure)
 
+        except (asyncio.TimeoutError, TimeoutError, asyncio.QueueEmpty):
+            # Re-raise so EventConsumer handles them as control-flow exceptions.
+            raise
         except Exception as e:  # type: ignore[misc]
             if "NOGROUP" in str(e):
                 # Consumer group was deleted, recreate it
                 await self._ensure_consumer_group()
-                raise RuntimeError("Consumer group recreated, try again")
-            raise RuntimeError(f"Error reading from stream: {e}")
+                if no_wait:
+                    raise asyncio.QueueEmpty(
+                        "Consumer group recreated, try again"
+                    ) from e
+                raise asyncio.TimeoutError("Consumer group recreated, try again") from e
+            raise RuntimeError(f"Error reading from stream: {e}") from e
 
-    async def close(self) -> None:
-        """Close the queue and clean up pending messages."""
-        self._closed = True
-        # Optionally clean up pending messages for this consumer
+    async def close(self, immediate: bool = False) -> None:
+        """Close the queue.
+
+        Args:
+            immediate:
+              - False (default): Stop enqueue; set _closing so consumers can drain.
+              - True: Stop dequeue (used by a2a-sdk EventConsumer on final event).
+                Set _closed and run pending cleanup (xpending_range + xack for this consumer).
+        """
+        if immediate:
+            self._closed = True
+            await self._close_pending_cleanup()
+            return
+
+        self._closing = True
+
+    async def _close_pending_cleanup(self) -> None:
+        """Ack this consumer's pending messages (xpending_range + xack) for cleanup."""
         try:
-            # Get pending messages for this consumer
-            pending = await self.redis.xpending_range(  # type: ignore[misc]
+            pending = await self.redis.xpending_range(
                 self._stream_key,
                 self.consumer_group,
                 min="-",
                 max="+",
                 count=100,
                 consumername=self.consumer_id,
-            )
-
-            # Acknowledge any pending messages to prevent them from being stuck
+            )  # type: ignore[misc]
             if pending:
                 message_ids = [msg["message_id"] for msg in pending]
                 await self.redis.xack(
                     self._stream_key, self.consumer_group, *message_ids
                 )  # type: ignore[misc]
-
         except Exception:  # type: ignore[misc]
-            # Consumer group might not exist, ignore
+            # Ignore e.g. NOGROUP (consumer group missing) so close() completes without raising.
             pass
 
     def is_closed(self) -> bool:

@@ -204,7 +204,7 @@ class TestRedisStreamsEventQueue:
 
     @pytest.mark.asyncio
     async def test_close_queue(self, mock_redis):
-        """Test closing the queue."""
+        """Test closing the queue with immediate=True (full close + pending cleanup)."""
         queue = RedisStreamsEventQueue(mock_redis, "task_123")
 
         # Mock pending messages
@@ -213,7 +213,7 @@ class TestRedisStreamsEventQueue:
             {"message_id": b"124-0"},
         ]
 
-        await queue.close()
+        await queue.close(immediate=True)
 
         assert queue._closed
         # Verify pending messages were acknowledged
@@ -281,7 +281,7 @@ class TestRedisStreamsEventQueue:
         mock_redis.xpending_range.side_effect = Exception("NOGROUP")
 
         # Should not raise - exception is caught and ignored
-        await queue.close()
+        await queue.close(immediate=True)
         assert queue._closed
 
     @pytest.mark.asyncio
@@ -292,7 +292,7 @@ class TestRedisStreamsEventQueue:
         # No pending messages
         mock_redis.xpending_range.return_value = []
 
-        await queue.close()
+        await queue.close(immediate=True)
         assert queue._closed
         # xack should not be called when no pending messages
         mock_redis.xack.assert_not_called()

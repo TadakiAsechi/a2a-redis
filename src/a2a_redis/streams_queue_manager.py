@@ -64,7 +64,7 @@ class RedisStreamsQueueManager(QueueManager):
             task_id: Task identifier
         """
         if task_id in self._queues:
-            await self._queues[task_id].close()
+            await self._queues[task_id].close(immediate=True)  # full close and pending cleanup
             del self._queues[task_id]
 
     async def create_or_tap(self, task_id: str) -> EventQueueProtocol:  # type: ignore[override]
